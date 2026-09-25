@@ -828,9 +828,22 @@ def serve_ui():
                     body: JSON.stringify({ answer: text })
                 });
                 const nextAction = await res.json();
+                
+                // 1. 현재 진료실 대화창 새로고침
                 const encRes = await fetch(`/api/encounters/${currentEncounterId}`);
                 const encData = await encRes.json();
                 renderChatHistory(encData.history);
+
+                // 2. 왼쪽 사이드바 목록도 최신 진단명/확신도로 즉시 동기화
+                if (currentPatient) {
+                    const pRes = await fetch('/api/patients/auth', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(currentPatient)
+                    });
+                    const pData = await pRes.json();
+                    renderEncountersList(pData.encounters);
+                }
             } catch (err) {
                 alert('진료 처리 중 통신 오류가 발생했습니다.');
             }
