@@ -14,8 +14,6 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
-# 한국 시간대(UTC+9) 설정
-KST = timezone(timedelta(hours=9))
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -26,6 +24,9 @@ import requests
 import uvicorn
 
 load_dotenv()
+
+# 한국 표준시(KST = UTC+9) 고정 정의
+KST = timezone(timedelta(hours=9))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 FREE_MODEL_POOL = [
@@ -65,7 +66,7 @@ def init_db():
 
 init_db()
 
-app = FastAPI(title="Clinical AI EMR & Diagnostic Agent")
+app = FastAPI(title="의료 진단 AI System")
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,9 +80,9 @@ SYSTEM_PROMPT = """
 당신은 대한민국 상급종합병원(대학병원) 수준의 통합 임상진료 전문의 AI입니다.
 내과, 외과, 정형외과, 신경과, 재활의학과, 이비인후과 등 26개 전체 전문 진료과목의 질환을 감별 진단합니다.
 
-[과거 병력 참조 원칙]
+[과거 병력 참조 및 독립 질환 감별 원칙]
 - 환자의 누적 병력은 기저 위험도(면역 저하 여부, 약물 상호작용 등)를 파악하는 참고자료입니다.
-- 금일 호소하는 새로운 증상이 기저질환과 완전히 무관한 독립적 급성 질환(예: 급성 감염병, 외상, 타 분과 질환)일 가능성을 열어두고 객관적으로 감별하십시오. 과거 진단명에 맹목적으로 얽매여 새로운 원인 질환을 배제하는 우를 범하지 마십시오.
+- 금일 호소하는 새로운 증상이 기저질환과 완전히 무관한 독립적 급성 질환(예: 급성 감염병, 외상, 타 분과 질환)일 가능성을 열어두고 객관적으로 감별하십시오. 과거 진단명에 맹목적으로 얽매여(Anchoring Bias) 새로운 원인 질환을 배제하는 우를 범하지 마십시오.
 
 [⚠️ 임상 확신도 및 진단서 발행 절대 규칙 (위반 엄격 금지)]
 1. [비증상성/행정 질문 시 진단서 발행 절대 금지]:
@@ -209,6 +210,7 @@ def authenticate_or_register_patient(req: PatientLookupRequest):
         else:
             patient_data = {"patient_id": row[0], "patient_name": row[1], "birth_date": row[2], "biological_sex": row[3], "created_at": row[4]}
         
+        # 최신 생성/대화 시각 기준으로 내림차순 정렬 (최신 진료가 맨 위)
         cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary FROM encounters WHERE patient_id = ? ORDER BY created_at DESC", (req.patient_id,))
         enc_rows = cursor.fetchall()
         encounters = [{"encounter_id": r[0], "encounter_seq": r[1], "chief_complaint": r[2], "created_at": r[3], "diagnosis_summary": r[4]} for r in enc_rows]
@@ -242,6 +244,7 @@ def start_new_encounter(req: StartEncounterRequest):
             raise HTTPException(status_code=404, detail="환자 정보 없음")
         patient_info = {"patient_id": p_row[0], "patient_name": p_row[1], "birth_date": p_row[2], "biological_sex": p_row[3]}
 
+        # 과거 병력은 시간순(오름차순)으로 프롬프트에 제공
         cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary FROM encounters WHERE patient_id = ? ORDER BY encounter_seq ASC", (req.patient_id,))
         past_encounters = [{"encounter_seq": r[1], "chief_complaint": r[2], "created_at": r[3], "diagnosis_summary": r[4]} for r in cursor.fetchall()]
 
@@ -265,7 +268,17 @@ def start_new_encounter(req: StartEncounterRequest):
             "action": action
         })
 
-        diag_init = action.get("diagnosis_report", {}).get("primary_diagnosis", "문진 진행 중") if action.get("diagnosis_report") else "문진 진행 중"
+        # 초기 진단 요약 설정 (확신도 50% 이상 시 괄호 표기)
+        diag_init = "문진 진행 중"
+        if action.get("diagnosis_report") and action["diagnosis_report"].get("primary_diagnosis"):
+            d_rep = action["diagnosis_report"]
+            c_score = d_rep.get("confidence_score", 0)
+            p_name = d_rep.get("primary_diagnosis", "")
+            if c_score >= 50:
+                diag_init = f"{p_name} ({c_score}%)"
+            else:
+                diag_init = "미상 (추가 검사 필요)"
+
         cursor.execute("INSERT INTO encounters VALUES (?, ?, ?, ?, ?, ?, ?)", 
                        (encounter_id, req.patient_id, next_seq, req.chief_complaint, now_str, json.dumps(current_encounter["history"], ensure_ascii=False), diag_init))
         conn.commit()
@@ -317,8 +330,9 @@ def respond_encounter(encounter_id: str, req: ChatAnswerRequest):
             else:
                 diag_summary = "미상 (추가 검사 필요)"
                 
+        now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
         cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ?, created_at = ? WHERE encounter_id = ?", 
-                       (json.dumps(current_encounter["history"], ensure_ascii=False), diag_summary, encounter_id))
+                       (json.dumps(current_encounter["history"], ensure_ascii=False), diag_summary, now_kst, encounter_id))
         conn.commit()
 
         return action
@@ -363,10 +377,19 @@ def edit_chat_message(encounter_id: str, req: EditChatRequest):
             "action": new_action
         })
 
-        diag_summary = new_action.get("diagnosis_report", {}).get("primary_diagnosis", row[5]) if new_action.get("diagnosis_report") else row[5]
+        diag_summary = row[5]
+        if new_action.get("diagnosis_report") and new_action["diagnosis_report"].get("primary_diagnosis"):
+            d_rep = new_action["diagnosis_report"]
+            p_name = d_rep.get("primary_diagnosis", "")
+            c_score = d_rep.get("confidence_score", 0)
+            if c_score >= 50:
+                diag_summary = f"{p_name} ({c_score}%)"
+            else:
+                diag_summary = "미상 (추가 검사 필요)"
 
+        now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
         cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ?, created_at = ? WHERE encounter_id = ?", 
-                       (json.dumps(history, ensure_ascii=False), diag_summary, encounter_id))
+                       (json.dumps(history, ensure_ascii=False), diag_summary, now_kst, encounter_id))
         conn.commit()
 
         return {"history": history, "latest_action": new_action}
@@ -406,6 +429,10 @@ def serve_ui():
 <head>
     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>의료 진단 AI System</title>
+    <!-- 카카오톡 미리보기 카드 전용 설정 -->
+    <meta property="og:title" content="의료 진단 AI System">
+    <meta property="og:description" content="26개 진료과목 통합 자율 임상 진단 시스템">
+    <meta property="og:type" content="website">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
         body { background-color: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
@@ -502,6 +529,7 @@ def serve_ui():
         .form-group label { display: block; font-size: 12px; font-weight: 700; color: #475569; margin-bottom: 4px; }
         .form-group input, .form-group select { width: 100%; padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13.5px; }
         .btn-submit { width: 100%; background: #2563eb; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: 700; cursor: pointer; margin-top: 10px; font-size: 14px; }
+        
         /* 📱 모바일/스마트폰 전용 완벽 레이아웃 최적화 */
         @media (max-width: 768px) {
             html, body {
@@ -690,7 +718,7 @@ def serve_ui():
                 <textarea 
                     id="userInput" 
                     placeholder="증상 또는 상태를 구체적으로 말씀해 주세요... (Enter: 전송, Shift+Enter: 줄바꿈)" 
-                    rows="1"
+                    rows="1" 
                     oninput="autoResizeTextarea(this)" 
                     onkeydown="handleTextareaKeydown(event)"
                 ></textarea>
@@ -747,7 +775,8 @@ def serve_ui():
             openLoginModal();
             const encH = document.querySelector('.enc-header');
             if (encH) {
-                encH.addEventListener('click', function() {
+                encH.addEventListener('click', function(e) {
+                    if (e.target.tagName === 'BUTTON') return;
                     this.classList.toggle('open');
                     const hList = document.querySelector('.history-list');
                     if (hList) hList.classList.toggle('open');
@@ -950,6 +979,16 @@ def serve_ui():
             if (res.ok) {
                 const data = await res.json();
                 renderChatHistory(data.history);
+                // 편집 시에도 사이드바 시간 및 진단명 동기화
+                if (currentPatient) {
+                    const pRes = await fetch('/api/patients/auth', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(currentPatient)
+                    });
+                    const pData = await pRes.json();
+                    renderEncountersList(pData.encounters);
+                }
             } else {
                 alert('메시지 수정에 실패했습니다.');
             }
@@ -972,7 +1011,6 @@ def serve_ui():
             }
         }
 
-        // Gemini 스타일 자동 높이 조절 함수
         function autoResizeTextarea(textarea) {
             textarea.style.height = 'auto';
             const newHeight = Math.min(textarea.scrollHeight, 160);
@@ -1009,7 +1047,7 @@ def serve_ui():
                 const encData = await encRes.json();
                 renderChatHistory(encData.history);
 
-                // 2. 왼쪽 사이드바 목록도 최신 진단명/확신도로 즉시 동기화
+                // 2. 왼쪽 사이드바 목록도 최신 진단명/확신도 및 시간으로 즉시 동기화
                 if (currentPatient) {
                     const pRes = await fetch('/api/patients/auth', {
                         method: 'POST',
@@ -1029,4 +1067,4 @@ def serve_ui():
 """
 
 if __name__ == "__main__":
-    uvicorn.run("agent_server:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("agent_server:app", host="127.0.0.1", port=8000, reload=True)a
