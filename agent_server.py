@@ -13,7 +13,9 @@ import re
 import sqlite3
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+# 한국 시간대(UTC+9) 설정
+KST = timezone(timedelta(hours=9))
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -199,7 +201,7 @@ def authenticate_or_register_patient(req: PatientLookupRequest):
         cursor = conn.cursor()
         cursor.execute("SELECT patient_id, patient_name, birth_date, biological_sex, created_at FROM patients WHERE patient_id = ?", (req.patient_id,))
         row = cursor.fetchone()
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
         if not row:
             cursor.execute("INSERT INTO patients VALUES (?, ?, ?, ?, ?)", (req.patient_id, req.patient_name, req.birth_date, req.biological_sex, now_str))
             conn.commit()
@@ -245,7 +247,7 @@ def start_new_encounter(req: StartEncounterRequest):
 
         next_seq = len(past_encounters) + 1
         encounter_id = f"enc-{uuid.uuid4().hex[:6]}"
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
 
         current_encounter = {
             "encounter_id": encounter_id,
