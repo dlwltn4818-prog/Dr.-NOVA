@@ -6,6 +6,8 @@ Clinical Diagnostic AI Agent - Production Standard EMR Engine
 - Auto-Expanding Multiline Textarea (Gemini-style dynamic height adjustment)
 - Chat Edit / Delete with Real-time DB Sync
 - Patient ID-based Longitudinal Record Tracking (SQLite3)
+- Real-time KST Timestamp Sync on Interaction
+- Descending Chronological Order for Encounters
 """
 import json
 import os
@@ -117,6 +119,13 @@ SYSTEM_PROMPT = """
 
 def clean_and_parse_json(text: str) -> Dict[str, Any]:
     text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         text = match.group(0)
@@ -160,19 +169,19 @@ def run_agent_reasoning(patient_info: Dict[str, Any], past_encounters: List[Dict
 
     last_err = ""
     for model_name in FREE_MODEL_POOL:
-        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        api_url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model_name}:generateContent?key={GEMINI_API_KEY}"
         try:
-            res = requests.post(api_url, json=payload, timeout=15)
+            res = requests.post(api_url, json=payload, timeout=25)
             res_data = res.json()
-            if "candidates" in res_data:
+            if "candidates" in res_data and len(res_data["candidates"]) > 0:
                 raw_text = res_data["candidates"][0]["content"]["parts"][0]["text"]
                 return clean_and_parse_json(raw_text)
             err_msg = res_data.get("error", {}).get("message", "Error")
             last_err = err_msg
-            time.sleep(0.5)
+            time.sleep(0.3)
         except Exception as e:
             last_err = str(e)
-            time.sleep(0.5)
+            time.sleep(0.3)
 
     raise HTTPException(status_code=500, detail=f"진단 엔진 지연: {last_err}")
 
@@ -210,7 +219,7 @@ def authenticate_or_register_patient(req: PatientLookupRequest):
         else:
             patient_data = {"patient_id": row[0], "patient_name": row[1], "birth_date": row[2], "biological_sex": row[3], "created_at": row[4]}
         
-        # 최신 생성/대화 시각 기준으로 내림차순 정렬 (최신 진료가 맨 위)
+        # 최근 진료/대화 시각 기준으로 내림차순 정렬 (최신 진료가 최상단)
         cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary FROM encounters WHERE patient_id = ? ORDER BY created_at DESC", (req.patient_id,))
         enc_rows = cursor.fetchall()
         encounters = [{"encounter_id": r[0], "encounter_seq": r[1], "chief_complaint": r[2], "created_at": r[3], "diagnosis_summary": r[4]} for r in enc_rows]
@@ -722,7 +731,7 @@ def serve_ui():
                     oninput="autoResizeTextarea(this)" 
                     onkeydown="handleTextareaKeydown(event)"
                 ></textarea>
-                <button type="button" onclick="sendMessage()">전송</button>
+                <button type="button" id="btnSend" onclick="sendMessage()">전송</button>
             </div>
         </div>
     </div>
@@ -799,31 +808,35 @@ def serve_ui():
                 return;
             }
 
-            const res = await fetch('/api/patients/auth', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    patient_id: pid,
-                    patient_name: pname,
-                    birth_date: pbirth || '2000.01.01',
-                    biological_sex: psex
-                })
-            });
+            try {
+                const res = await fetch('/api/patients/auth', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        patient_id: pid,
+                        patient_name: pname,
+                        birth_date: pbirth || '2000.01.01',
+                        biological_sex: psex
+                    })
+                });
 
-            const data = await res.json();
-            currentPatient = data.patient;
-            document.getElementById('loginModal').style.display = 'none';
+                const data = await res.json();
+                currentPatient = data.patient;
+                document.getElementById('loginModal').style.display = 'none';
 
-            document.getElementById('displayPatientId').innerText = `PATIENT NO. ${currentPatient.patient_id}`;
-            document.getElementById('displayPatientName').innerText = `${currentPatient.patient_name} 님`;
-            document.getElementById('displayPatientMeta').innerText = `${currentPatient.biological_sex} | 생년월일: ${currentPatient.birth_date}`;
+                document.getElementById('displayPatientId').innerText = `PATIENT NO. ${currentPatient.patient_id}`;
+                document.getElementById('displayPatientName').innerText = `${currentPatient.patient_name} 님`;
+                document.getElementById('displayPatientMeta').innerText = `${currentPatient.biological_sex} | 생년월일: ${currentPatient.birth_date}`;
 
-            renderEncountersList(data.encounters);
+                renderEncountersList(data.encounters);
 
-            if (data.encounters.length > 0) {
-                selectEncounter(data.encounters[0].encounter_id);
-            } else {
-                openNewEncounterModal();
+                if (data.encounters.length > 0) {
+                    selectEncounter(data.encounters[0].encounter_id);
+                } else {
+                    openNewEncounterModal();
+                }
+            } catch (e) {
+                alert('환자 인증 처리 중 오류가 발생했습니다.');
             }
         }
 
@@ -846,13 +859,17 @@ def serve_ui():
 
         async function selectEncounter(encounterId) {
             currentEncounterId = encounterId;
-            const res = await fetch(`/api/encounters/${encounterId}`);
-            const data = await res.json();
+            try {
+                const res = await fetch(`/api/encounters/${encounterId}`);
+                const data = await res.json();
 
-            document.getElementById('encounterTitle').innerText = `제 ${data.encounter_seq}차 진료실: ${data.chief_complaint}`;
-            document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
+                document.getElementById('encounterTitle').innerText = `제 ${data.encounter_seq}차 진료실: ${data.chief_complaint}`;
+                document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
 
-            renderChatHistory(data.history);
+                renderChatHistory(data.history);
+            } catch(e) {
+                console.error(e);
+            }
         }
 
         function renderChatHistory(history) {
@@ -879,28 +896,38 @@ def serve_ui():
             btn.innerText = 'AI 진료 준비 중...';
             btn.disabled = true;
 
-            const res = await fetch('/api/encounters/start', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    patient_id: currentPatient.patient_id,
-                    chief_complaint: complaint
-                })
-            });
+            try {
+                const res = await fetch('/api/encounters/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        patient_id: currentPatient.patient_id,
+                        chief_complaint: complaint
+                    })
+                });
 
-            const data = await res.json();
-            document.getElementById('newEncModal').style.display = 'none';
-            btn.innerText = '진료 시작하기';
-            btn.disabled = false;
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || '진료 시작 실패');
+                }
 
-            const authRes = await fetch('/api/patients/auth', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(currentPatient)
-            });
-            const authData = await authRes.json();
-            renderEncountersList(authData.encounters);
-            selectEncounter(data.encounter_id);
+                const data = await res.json();
+                document.getElementById('newEncModal').style.display = 'none';
+
+                const authRes = await fetch('/api/patients/auth', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(currentPatient)
+                });
+                const authData = await authRes.json();
+                renderEncountersList(authData.encounters);
+                selectEncounter(data.encounter_id);
+            } catch(err) {
+                alert('진료 시작 중 오류: ' + err.message);
+            } finally {
+                btn.innerText = '진료 시작하기';
+                btn.disabled = false;
+            }
         }
 
         function addAiMessage(action) {
@@ -970,44 +997,51 @@ def serve_ui():
             const newText = prompt('메시지를 수정하세요:', oldText);
             if (!newText || newText.trim() === oldText) return;
 
-            const res = await fetch(`/api/encounters/${currentEncounterId}/chat/edit`, {
-                method: 'PUT',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ index: idx, new_text: newText.trim() })
-            });
+            try {
+                const res = await fetch(`/api/encounters/${currentEncounterId}/chat/edit`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ index: idx, new_text: newText.trim() })
+                });
 
-            if (res.ok) {
-                const data = await res.json();
-                renderChatHistory(data.history);
-                // 편집 시에도 사이드바 시간 및 진단명 동기화
-                if (currentPatient) {
-                    const pRes = await fetch('/api/patients/auth', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify(currentPatient)
-                    });
-                    const pData = await pRes.json();
-                    renderEncountersList(pData.encounters);
+                if (res.ok) {
+                    const data = await res.json();
+                    renderChatHistory(data.history);
+                    if (currentPatient) {
+                        const pRes = await fetch('/api/patients/auth', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(currentPatient)
+                        });
+                        const pData = await pRes.json();
+                        renderEncountersList(pData.encounters);
+                    }
+                } else {
+                    alert('메시지 수정에 실패했습니다.');
                 }
-            } else {
-                alert('메시지 수정에 실패했습니다.');
+            } catch(e) {
+                alert('통신 오류로 수정하지 못했습니다.');
             }
         }
 
         async function deleteMessage(idx) {
             if (!confirm('이 발언과 관련 답변을 삭제하시겠습니까?')) return;
 
-            const res = await fetch(`/api/encounters/${currentEncounterId}/chat/delete`, {
-                method: 'DELETE',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ index: idx })
-            });
+            try {
+                const res = await fetch(`/api/encounters/${currentEncounterId}/chat/delete`, {
+                    method: 'DELETE',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ index: idx })
+                });
 
-            if (res.ok) {
-                const data = await res.json();
-                renderChatHistory(data.history);
-            } else {
-                alert('메시지 삭제에 실패했습니다.');
+                if (res.ok) {
+                    const data = await res.json();
+                    renderChatHistory(data.history);
+                } else {
+                    alert('메시지 삭제에 실패했습니다.');
+                }
+            } catch(e) {
+                alert('통신 오류로 삭제하지 못했습니다.');
             }
         }
 
@@ -1027,12 +1061,15 @@ def serve_ui():
 
         async function sendMessage(presetText) {
             const textarea = document.getElementById('userInput');
+            const btnSend = document.getElementById('btnSend');
             const text = presetText || textarea.value.trim();
             if (!text || !currentEncounterId) return;
 
             textarea.value = '';
             textarea.style.height = '44px';
             textarea.style.overflowY = 'hidden';
+            btnSend.disabled = true;
+            btnSend.innerText = '...';
 
             try {
                 const res = await fetch(`/api/encounters/${currentEncounterId}/respond`, {
@@ -1040,25 +1077,38 @@ def serve_ui():
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ answer: text })
                 });
-                const nextAction = await res.json();
-                
+
+                if (!res.ok) {
+                    const errData = await res.json();
+                    alert('진료 엔진 지연: ' + (errData.detail || '응답 생성 실패'));
+                    return;
+                }
+
                 // 1. 현재 진료실 대화창 새로고침
                 const encRes = await fetch(`/api/encounters/${currentEncounterId}`);
-                const encData = await encRes.json();
-                renderChatHistory(encData.history);
+                if (encRes.ok) {
+                    const encData = await encRes.json();
+                    renderChatHistory(encData.history);
+                }
 
-                // 2. 왼쪽 사이드바 목록도 최신 진단명/확신도 및 시간으로 즉시 동기화
+                // 2. 사이드바 실시간 동기화
                 if (currentPatient) {
                     const pRes = await fetch('/api/patients/auth', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify(currentPatient)
                     });
-                    const pData = await pRes.json();
-                    renderEncountersList(pData.encounters);
+                    if (pRes.ok) {
+                        const pData = await pRes.json();
+                        renderEncountersList(pData.encounters);
+                    }
                 }
             } catch (err) {
-                alert('진료 처리 중 통신 오류가 발생했습니다.');
+                console.error(err);
+                alert('서버 응답 지연이 발생했습니다. 잠시 후 다시 전송해 주세요.');
+            } finally {
+                btnSend.disabled = false;
+                btnSend.innerText = '전송';
             }
         }
     </script>
@@ -1067,4 +1117,4 @@ def serve_ui():
 """
 
 if __name__ == "__main__":
-    uvicorn.run("agent_server:app", host="127.0.0.1", port=8000, reload=True)a
+    uvicorn.run("agent_server:app", host="127.0.0.1", port=8000, reload=True)
