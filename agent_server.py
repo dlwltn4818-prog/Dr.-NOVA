@@ -500,6 +500,89 @@ def serve_ui():
         .form-group label { display: block; font-size: 12px; font-weight: 700; color: #475569; margin-bottom: 4px; }
         .form-group input, .form-group select { width: 100%; padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13.5px; }
         .btn-submit { width: 100%; background: #2563eb; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: 700; cursor: pointer; margin-top: 10px; font-size: 14px; }
+        /* 📱 스마트폰 / 모바일 반응형 최적화 (화면 폭 768px 이하) */
+        @media (max-width: 768px) {
+            body {
+                height: 100%;
+                overflow: auto;
+                background-color: #f8fafc;
+            }
+            .main-container {
+                width: 100vw;
+                height: 100dvh; /* 모바일 브라우저 주소창 고려 */
+                max-width: 100%;
+                border-radius: 0;
+                box-shadow: none;
+                flex-direction: column;
+            }
+            /* 사이드바는 모바일에서 상단 접이식/컴팩트 바 형태로 축소 */
+            .sidebar {
+                width: 100%;
+                max-height: 180px;
+                border-right: none;
+                border-bottom: 1px solid #cbd5e1;
+            }
+            .patient-card {
+                padding: 10px 14px;
+            }
+            .patient-card .p-name {
+                font-size: 15px;
+            }
+            .enc-header {
+                padding: 8px 14px 4px;
+            }
+            .history-list {
+                padding: 6px 12px;
+                gap: 6px;
+                max-height: 90px;
+            }
+            .history-item {
+                padding: 8px 10px;
+            }
+            
+            /* 채팅 화면 전체 높이 확보 */
+            .chat-section {
+                flex: 1;
+                height: calc(100dvh - 180px);
+            }
+            .chat-header {
+                padding: 10px 14px;
+            }
+            .chat-header h1 {
+                font-size: 13.5px;
+            }
+            .chat-container {
+                padding: 12px 10px;
+                gap: 12px;
+            }
+            .msg-content {
+                max-width: 88%;
+            }
+            .bubble {
+                font-size: 13px;
+                padding: 10px 12px;
+            }
+            
+            /* 입력창 모바일 터치 최적화 */
+            .input-bar {
+                padding: 8px 10px;
+                gap: 6px;
+            }
+            .input-bar textarea {
+                font-size: 14px;
+                padding: 9px 12px;
+            }
+            .input-bar button {
+                padding: 9px 15px;
+                font-size: 13px;
+            }
+            
+            /* 모달 팝업 모바일 화면 맞춤 */
+            .modal-content {
+                width: 90%;
+                padding: 18px 16px;
+            }
+        }
     </style>
 </head>
 <body>
