@@ -209,7 +209,7 @@ def authenticate_or_register_patient(req: PatientLookupRequest):
         else:
             patient_data = {"patient_id": row[0], "patient_name": row[1], "birth_date": row[2], "biological_sex": row[3], "created_at": row[4]}
         
-        cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary FROM encounters WHERE patient_id = ? ORDER BY encounter_seq DESC", (req.patient_id,))
+        cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary FROM encounters WHERE patient_id = ? ORDER BY created_at DESC", (req.patient_id,))
         enc_rows = cursor.fetchall()
         encounters = [{"encounter_id": r[0], "encounter_seq": r[1], "chief_complaint": r[2], "created_at": r[3], "diagnosis_summary": r[4]} for r in enc_rows]
         return {"patient": patient_data, "encounters": encounters}
@@ -317,7 +317,7 @@ def respond_encounter(encounter_id: str, req: ChatAnswerRequest):
             else:
                 diag_summary = "미상 (추가 검사 필요)"
                 
-        cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ? WHERE encounter_id = ?", 
+        cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ?, created_at = ? WHERE encounter_id = ?", 
                        (json.dumps(current_encounter["history"], ensure_ascii=False), diag_summary, encounter_id))
         conn.commit()
 
@@ -365,7 +365,7 @@ def edit_chat_message(encounter_id: str, req: EditChatRequest):
 
         diag_summary = new_action.get("diagnosis_report", {}).get("primary_diagnosis", row[5]) if new_action.get("diagnosis_report") else row[5]
 
-        cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ? WHERE encounter_id = ?", 
+        cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ?, created_at = ? WHERE encounter_id = ?", 
                        (json.dumps(history, ensure_ascii=False), diag_summary, encounter_id))
         conn.commit()
 
