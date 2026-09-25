@@ -539,9 +539,47 @@ def serve_ui():
             .patient-card .p-name { font-size: 14px !important; }
             .patient-card .p-meta { font-size: 11px !important; margin: 0 !important; }
 
-            /* 모바일에서 공간을 너무 많이 먹던 차수 이력 목록을 숨겨서 채팅창 공간 100% 확보 */
-            .enc-header, .history-list {
-                display: none !important;
+            /* 모바일 진료 이력 토글 서랍 */
+            .enc-header {
+                display: flex !important;
+                padding: 6px 12px !important;
+                background: #e2e8f0 !important;
+                cursor: pointer;
+                font-size: 11.5px !important;
+                font-weight: 700 !important;
+                color: #334155 !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+            }
+            .enc-header::after {
+                content: ' ▾ 이력 열기';
+                font-size: 10px;
+                color: #2563eb;
+            }
+            .enc-header.open::after {
+                content: ' ▴ 접기';
+            }
+            .history-list {
+                display: none;
+                max-height: 140px !important;
+                overflow-y: auto !important;
+                background: #ffffff !important;
+                padding: 6px 10px !important;
+                gap: 6px !important;
+                border-bottom: 1px solid #cbd5e1 !important;
+            }
+            .history-list.open {
+                display: flex !important;
+                flex-direction: column !important;
+            }
+            .history-item {
+                padding: 6px 8px !important;
+            }
+            .history-item .h-title {
+                font-size: 11.5px !important;
+            }
+            .history-item .h-meta {
+                font-size: 10px !important;
             }
 
             /* 채팅 섹션이 스마트폰 전체 화면 차지 */
@@ -705,6 +743,14 @@ def serve_ui():
 
         window.onload = function() {
             openLoginModal();
+            const encH = document.querySelector('.enc-header');
+            if (encH) {
+                encH.addEventListener('click', function() {
+                    this.classList.toggle('open');
+                    const hList = document.querySelector('.history-list');
+                    if (hList) hList.classList.toggle('open');
+                });
+            }
         };
 
         function openLoginModal() {
