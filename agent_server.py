@@ -393,7 +393,7 @@ def serve_ui():
 <html lang="ko">
 <head>
     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>정밀 진단 시스템</title>
+    <title>의료 진단 AI System</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
         body { background-color: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
