@@ -303,8 +303,14 @@ def respond_encounter(encounter_id: str, req: ChatAnswerRequest):
 
         diag_summary = current_encounter["diagnosis_summary"]
         if action.get("diagnosis_report") and action["diagnosis_report"].get("primary_diagnosis"):
-            diag_summary = action["diagnosis_report"]["primary_diagnosis"]
-
+            d_rep = action["diagnosis_report"]
+            p_name = d_rep.get("primary_diagnosis", "")
+            c_score = d_rep.get("confidence_score", 0)
+            if c_score >= 50:
+                diag_summary = f"{p_name} ({c_score}%)"
+            else:
+                diag_summary = "미상 (추가 검사 필요)"
+                
         cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ? WHERE encounter_id = ?", 
                        (json.dumps(current_encounter["history"], ensure_ascii=False), diag_summary, encounter_id))
         conn.commit()
