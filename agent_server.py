@@ -500,87 +500,127 @@ def serve_ui():
         .form-group label { display: block; font-size: 12px; font-weight: 700; color: #475569; margin-bottom: 4px; }
         .form-group input, .form-group select { width: 100%; padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13.5px; }
         .btn-submit { width: 100%; background: #2563eb; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: 700; cursor: pointer; margin-top: 10px; font-size: 14px; }
-        /* 📱 스마트폰 / 모바일 반응형 최적화 (화면 폭 768px 이하) */
+        /* 📱 모바일/스마트폰 전용 완벽 레이아웃 최적화 */
         @media (max-width: 768px) {
-            body {
-                height: 100%;
-                overflow: auto;
-                background-color: #f8fafc;
+            html, body {
+                height: 100% !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: hidden !important;
+                background-color: #f8fafc !important;
             }
             .main-container {
-                width: 100vw;
-                height: 100dvh; /* 모바일 브라우저 주소창 고려 */
-                max-width: 100%;
-                border-radius: 0;
-                box-shadow: none;
-                flex-direction: column;
+                width: 100% !important;
+                height: 100dvh !important;
+                max-width: 100% !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+                display: flex !important;
+                flex-direction: column !important;
             }
-            /* 사이드바는 모바일에서 상단 접이식/컴팩트 바 형태로 축소 */
+            /* 상단 사이드바를 아주 슬림한 환자 요약 탭으로 압축 */
             .sidebar {
-                width: 100%;
-                max-height: 180px;
-                border-right: none;
-                border-bottom: 1px solid #cbd5e1;
+                width: 100% !important;
+                height: auto !important;
+                max-height: none !important;
+                flex-shrink: 0 !important;
+                border-right: none !important;
+                border-bottom: 1px solid #cbd5e1 !important;
+                background: #f1f5f9 !important;
             }
             .patient-card {
-                padding: 10px 14px;
+                padding: 8px 12px !important;
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                border-bottom: none !important;
             }
-            .patient-card .p-name {
-                font-size: 15px;
+            .patient-card .p-id { font-size: 10px !important; margin: 0 !important; }
+            .patient-card .p-name { font-size: 14px !important; }
+            .patient-card .p-meta { font-size: 11px !important; margin: 0 !important; }
+
+            /* 모바일에서 공간을 너무 많이 먹던 차수 이력 목록을 숨겨서 채팅창 공간 100% 확보 */
+            .enc-header, .history-list {
+                display: none !important;
             }
-            .enc-header {
-                padding: 8px 14px 4px;
-            }
-            .history-list {
-                padding: 6px 12px;
-                gap: 6px;
-                max-height: 90px;
-            }
-            .history-item {
-                padding: 8px 10px;
-            }
-            
-            /* 채팅 화면 전체 높이 확보 */
+
+            /* 채팅 섹션이 스마트폰 전체 화면 차지 */
             .chat-section {
-                flex: 1;
-                height: calc(100dvh - 180px);
+                flex: 1 !important;
+                height: auto !important;
+                display: flex !important;
+                flex-direction: column !important;
+                overflow: hidden !important;
             }
             .chat-header {
-                padding: 10px 14px;
+                padding: 8px 12px !important;
             }
             .chat-header h1 {
-                font-size: 13.5px;
+                font-size: 12.5px !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                max-width: 70% !important;
             }
+            .btn-switch-user {
+                padding: 3px 8px !important;
+                font-size: 11px !important;
+            }
+
+            /* 대화 스크롤 영역 */
             .chat-container {
-                padding: 12px 10px;
-                gap: 12px;
+                flex: 1 !important;
+                padding: 10px !important;
+                gap: 10px !important;
+                overflow-y: auto !important;
             }
             .msg-content {
-                max-width: 88%;
+                max-width: 90% !important;
+            }
+            .avatar {
+                width: 30px !important;
+                height: 30px !important;
+                font-size: 14px !important;
             }
             .bubble {
-                font-size: 13px;
-                padding: 10px 12px;
+                padding: 8px 12px !important;
+                font-size: 13px !important;
+                line-height: 1.45 !important;
             }
-            
-            /* 입력창 모바일 터치 최적화 */
+
+            /* 정밀 진단서 카드 크기 맞춤 */
+            .diag-card {
+                padding: 10px !important;
+                margin-top: 6px !important;
+            }
+            .diag-primary {
+                font-size: 13.5px !important;
+            }
+            .diag-reasoning {
+                font-size: 11.5px !important;
+                padding: 6px !important;
+            }
+
+            /* 하단 입력창 고정 및 짤림 방지 */
             .input-bar {
-                padding: 8px 10px;
-                gap: 6px;
+                padding: 8px 10px !important;
+                gap: 6px !important;
+                background: #ffffff !important;
+                border-top: 1px solid #e2e8f0 !important;
             }
             .input-bar textarea {
-                font-size: 14px;
-                padding: 9px 12px;
+                height: 40px !important;
+                font-size: 13.5px !important;
+                padding: 8px 12px !important;
             }
             .input-bar button {
-                padding: 9px 15px;
-                font-size: 13px;
+                height: 40px !important;
+                padding: 0 14px !important;
+                font-size: 13px !important;
             }
-            
-            /* 모달 팝업 모바일 화면 맞춤 */
             .modal-content {
-                width: 90%;
-                padding: 18px 16px;
+                width: 90% !important;
+                padding: 16px !important;
             }
         }
     </style>
