@@ -6,6 +6,7 @@ Clinical Diagnostic AI Agent - Production Standard EMR Engine
 - Auto-Expanding Multiline Textarea (Gemini-style dynamic height adjustment)
 - Chat Edit / Delete with Real-time DB Sync
 - Patient ID-based Longitudinal Record Tracking (SQLite3)
+- KST (Asia/Seoul) Timezone Guaranteed
 """
 import json
 import os
@@ -13,9 +14,8 @@ import re
 import sqlite3
 import time
 import uuid
-from datetime import datetime, timezone, timedelta
-# 한국 시간대(UTC+9) 설정
-KST = timezone(timedelta(hours=9))
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -26,6 +26,10 @@ import requests
 import uvicorn
 
 load_dotenv()
+
+def get_kst_now() -> str:
+    """서버 OS 설정과 무관하게 항상 대한민국 표준시(KST)를 반환합니다."""
+    return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 FREE_MODEL_POOL = [
@@ -63,7 +67,6 @@ def init_db():
             )
         """)
         
-        # 기존 DB 파일과의 호환성을 위한 컬럼 점검
         cursor.execute("PRAGMA table_info(encounters)")
         columns = [col[1] for col in cursor.fetchall()]
         if "updated_at" not in columns:
@@ -209,7 +212,7 @@ def authenticate_or_register_patient(req: PatientLookupRequest):
         cursor = conn.cursor()
         cursor.execute("SELECT patient_id, patient_name, birth_date, biological_sex, created_at FROM patients WHERE patient_id = ?", (req.patient_id,))
         row = cursor.fetchone()
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        now_str = get_kst_now()
         if not row:
             cursor.execute("INSERT INTO patients VALUES (?, ?, ?, ?, ?)", (req.patient_id, req.patient_name, req.birth_date, req.biological_sex, now_str))
             conn.commit()
@@ -217,7 +220,6 @@ def authenticate_or_register_patient(req: PatientLookupRequest):
         else:
             patient_data = {"patient_id": row[0], "patient_name": row[1], "birth_date": row[2], "biological_sex": row[3], "created_at": row[4]}
         
-        # updated_at(마지막 진료 활동 시간) 기준 내림차순 정렬
         cursor.execute("""
             SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary, COALESCE(updated_at, created_at) as last_updated 
             FROM encounters 
@@ -269,7 +271,7 @@ def start_new_encounter(req: StartEncounterRequest):
 
         next_seq = len(past_encounters) + 1
         encounter_id = f"enc-{uuid.uuid4().hex[:6]}"
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        now_str = get_kst_now()
 
         current_encounter = {
             "encounter_id": encounter_id,
@@ -340,8 +342,7 @@ def respond_encounter(encounter_id: str, req: ChatAnswerRequest):
             else:
                 diag_summary = "미상 (추가 검사 필요)"
 
-        # 추가 질문 시 updated_at을 현재 시각으로 갱신
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        now_str = get_kst_now()
         cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ?, updated_at = ? WHERE encounter_id = ?", 
                        (json.dumps(current_encounter["history"], ensure_ascii=False), diag_summary, now_str, encounter_id))
         conn.commit()
@@ -390,8 +391,7 @@ def edit_chat_message(encounter_id: str, req: EditChatRequest):
 
         diag_summary = new_action.get("diagnosis_report", {}).get("primary_diagnosis", row[5]) if new_action.get("diagnosis_report") else row[5]
 
-        # 메시지 수정 시에도 updated_at 최신화
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        now_str = get_kst_now()
         cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ?, updated_at = ? WHERE encounter_id = ?", 
                        (json.dumps(history, ensure_ascii=False), diag_summary, now_str, encounter_id))
         conn.commit()
@@ -779,7 +779,6 @@ def serve_ui():
                 const item = document.createElement('div');
                 item.className = 'history-item' + (enc.encounter_id === currentEncounterId ? ' active' : '');
                 item.onclick = () => selectEncounter(enc.encounter_id);
-                // 표시 시간을 마지막 진료 활동 시간(updated_at)으로 출력
                 item.innerHTML = `
                     <div class="seq">제 ${enc.encounter_seq}차 진료</div>
                     <div class="complaint">${enc.chief_complaint}</div>
@@ -926,7 +925,6 @@ def serve_ui():
                 const data = await res.json();
                 renderChatHistory(data.history);
 
-                // 수정 후 목록 순서/시간 동기화
                 if (currentPatient) {
                     const pRes = await fetch('/api/patients/auth', {
                         method: 'POST',
@@ -989,12 +987,10 @@ def serve_ui():
                 });
                 const nextAction = await res.json();
                 
-                // 1. 대화창 갱신
                 const encRes = await fetch(`/api/encounters/${currentEncounterId}`);
                 const encData = await encRes.json();
                 renderChatHistory(encData.history);
 
-                // 2. 왼쪽 사이드바(최신 활동 순으로 재정렬 및 시간 업데이트) 즉시 반영
                 if (currentPatient) {
                     const pRes = await fetch('/api/patients/auth', {
                         method: 'POST',
