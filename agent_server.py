@@ -13,9 +13,7 @@ import re
 import sqlite3
 import time
 import uuid
-from datetime import datetime, timezone, timedelta
-# 한국 시간대(UTC+9) 설정
-KST = timezone(timedelta(hours=9))
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -58,9 +56,17 @@ def init_db():
                 created_at TEXT,
                 history_json TEXT,
                 diagnosis_summary TEXT,
+                updated_at TEXT,
                 FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
             )
         """)
+        
+        # 기존 DB 파일과의 호환성을 위한 컬럼 점검
+        cursor.execute("PRAGMA table_info(encounters)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if "updated_at" not in columns:
+            cursor.execute("ALTER TABLE encounters ADD COLUMN updated_at TEXT")
+            cursor.execute("UPDATE encounters SET updated_at = created_at WHERE updated_at IS NULL")
         conn.commit()
 
 init_db()
@@ -124,7 +130,7 @@ def clean_and_parse_json(text: str) -> Dict[str, Any]:
 def run_agent_reasoning(patient_info: Dict[str, Any], past_encounters: List[Dict[str, Any]], current_encounter: Dict[str, Any]) -> Dict[str, Any]:
     past_summary = ""
     for enc in past_encounters:
-        past_summary += f"- [{enc['created_at']} 제{enc['encounter_seq']}차] 주호소: {enc['chief_complaint']} / 최종진단: {enc.get('diagnosis_summary', '문진 진행')}\n"
+        past_summary += f"- [{enc.get('updated_at', enc['created_at'])} 제{enc['encounter_seq']}차] 주호소: {enc['chief_complaint']} / 최종진단: {enc.get('diagnosis_summary', '문진 진행')}\n"
 
     current_dialogue = ""
     for turn in current_encounter["history"]:
@@ -201,7 +207,7 @@ def authenticate_or_register_patient(req: PatientLookupRequest):
         cursor = conn.cursor()
         cursor.execute("SELECT patient_id, patient_name, birth_date, biological_sex, created_at FROM patients WHERE patient_id = ?", (req.patient_id,))
         row = cursor.fetchone()
-        now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         if not row:
             cursor.execute("INSERT INTO patients VALUES (?, ?, ?, ?, ?)", (req.patient_id, req.patient_name, req.birth_date, req.biological_sex, now_str))
             conn.commit()
@@ -209,16 +215,29 @@ def authenticate_or_register_patient(req: PatientLookupRequest):
         else:
             patient_data = {"patient_id": row[0], "patient_name": row[1], "birth_date": row[2], "biological_sex": row[3], "created_at": row[4]}
         
-        cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary FROM encounters WHERE patient_id = ? ORDER BY encounter_seq DESC", (req.patient_id,))
+        # updated_at(마지막 진료 활동 시간) 기준 내림차순 정렬
+        cursor.execute("""
+            SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary, COALESCE(updated_at, created_at) as last_updated 
+            FROM encounters 
+            WHERE patient_id = ? 
+            ORDER BY last_updated DESC
+        """, (req.patient_id,))
         enc_rows = cursor.fetchall()
-        encounters = [{"encounter_id": r[0], "encounter_seq": r[1], "chief_complaint": r[2], "created_at": r[3], "diagnosis_summary": r[4]} for r in enc_rows]
+        encounters = [{
+            "encounter_id": r[0],
+            "encounter_seq": r[1],
+            "chief_complaint": r[2],
+            "created_at": r[3],
+            "diagnosis_summary": r[4],
+            "updated_at": r[5]
+        } for r in enc_rows]
         return {"patient": patient_data, "encounters": encounters}
 
 @app.get("/api/encounters/{encounter_id}")
 def get_encounter(encounter_id: str):
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT encounter_id, patient_id, encounter_seq, chief_complaint, created_at, history_json, diagnosis_summary FROM encounters WHERE encounter_id = ?", (encounter_id,))
+        cursor.execute("SELECT encounter_id, patient_id, encounter_seq, chief_complaint, created_at, history_json, diagnosis_summary, updated_at FROM encounters WHERE encounter_id = ?", (encounter_id,))
         row = cursor.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="진료 기록 없음")
@@ -229,7 +248,8 @@ def get_encounter(encounter_id: str):
             "chief_complaint": row[3],
             "created_at": row[4],
             "history": json.loads(row[5]),
-            "diagnosis_summary": row[6]
+            "diagnosis_summary": row[6],
+            "updated_at": row[7] or row[4]
         }
 
 @app.post("/api/encounters/start")
@@ -242,12 +262,12 @@ def start_new_encounter(req: StartEncounterRequest):
             raise HTTPException(status_code=404, detail="환자 정보 없음")
         patient_info = {"patient_id": p_row[0], "patient_name": p_row[1], "birth_date": p_row[2], "biological_sex": p_row[3]}
 
-        cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary FROM encounters WHERE patient_id = ? ORDER BY encounter_seq ASC", (req.patient_id,))
-        past_encounters = [{"encounter_seq": r[1], "chief_complaint": r[2], "created_at": r[3], "diagnosis_summary": r[4]} for r in cursor.fetchall()]
+        cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary, updated_at FROM encounters WHERE patient_id = ? ORDER BY encounter_seq ASC", (req.patient_id,))
+        past_encounters = [{"encounter_seq": r[1], "chief_complaint": r[2], "created_at": r[3], "diagnosis_summary": r[4], "updated_at": r[5] or r[3]} for r in cursor.fetchall()]
 
         next_seq = len(past_encounters) + 1
         encounter_id = f"enc-{uuid.uuid4().hex[:6]}"
-        now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         current_encounter = {
             "encounter_id": encounter_id,
@@ -255,6 +275,7 @@ def start_new_encounter(req: StartEncounterRequest):
             "encounter_seq": next_seq,
             "chief_complaint": req.chief_complaint,
             "created_at": now_str,
+            "updated_at": now_str,
             "history": []
         }
 
@@ -266,8 +287,8 @@ def start_new_encounter(req: StartEncounterRequest):
         })
 
         diag_init = action.get("diagnosis_report", {}).get("primary_diagnosis", "문진 진행 중") if action.get("diagnosis_report") else "문진 진행 중"
-        cursor.execute("INSERT INTO encounters VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                       (encounter_id, req.patient_id, next_seq, req.chief_complaint, now_str, json.dumps(current_encounter["history"], ensure_ascii=False), diag_init))
+        cursor.execute("INSERT INTO encounters VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+                       (encounter_id, req.patient_id, next_seq, req.chief_complaint, now_str, json.dumps(current_encounter["history"], ensure_ascii=False), diag_init, now_str))
         conn.commit()
 
         return {"encounter_id": encounter_id, "next_action": action}
@@ -296,8 +317,8 @@ def respond_encounter(encounter_id: str, req: ChatAnswerRequest):
         p_row = cursor.fetchone()
         patient_info = {"patient_id": p_row[0], "patient_name": p_row[1], "birth_date": p_row[2], "biological_sex": p_row[3]}
 
-        cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary FROM encounters WHERE patient_id = ? AND encounter_id != ? ORDER BY encounter_seq ASC", (patient_id, encounter_id))
-        past_encounters = [{"encounter_seq": r[1], "chief_complaint": r[2], "created_at": r[3], "diagnosis_summary": r[4]} for r in cursor.fetchall()]
+        cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary, updated_at FROM encounters WHERE patient_id = ? AND encounter_id != ? ORDER BY encounter_seq ASC", (patient_id, encounter_id))
+        past_encounters = [{"encounter_seq": r[1], "chief_complaint": r[2], "created_at": r[3], "diagnosis_summary": r[4], "updated_at": r[5] or r[3]} for r in cursor.fetchall()]
 
         current_encounter["history"].append({"role": "user", "content": req.answer})
         action = run_agent_reasoning(patient_info, past_encounters, current_encounter)
@@ -316,9 +337,11 @@ def respond_encounter(encounter_id: str, req: ChatAnswerRequest):
                 diag_summary = f"{p_name} ({c_score}%)"
             else:
                 diag_summary = "미상 (추가 검사 필요)"
-                
-        cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ? WHERE encounter_id = ?", 
-                       (json.dumps(current_encounter["history"], ensure_ascii=False), diag_summary, encounter_id))
+
+        # 추가 질문 시 updated_at을 현재 시각으로 갱신
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ?, updated_at = ? WHERE encounter_id = ?", 
+                       (json.dumps(current_encounter["history"], ensure_ascii=False), diag_summary, now_str, encounter_id))
         conn.commit()
 
         return action
@@ -344,8 +367,8 @@ def edit_chat_message(encounter_id: str, req: EditChatRequest):
         p_row = cursor.fetchone()
         patient_info = {"patient_id": p_row[0], "patient_name": p_row[1], "birth_date": p_row[2], "biological_sex": p_row[3]}
 
-        cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary FROM encounters WHERE patient_id = ? AND encounter_id != ? ORDER BY encounter_seq ASC", (patient_id, encounter_id))
-        past_encounters = [{"encounter_seq": r[1], "chief_complaint": r[2], "created_at": r[3], "diagnosis_summary": r[4]} for r in cursor.fetchall()]
+        cursor.execute("SELECT encounter_id, encounter_seq, chief_complaint, created_at, diagnosis_summary, updated_at FROM encounters WHERE patient_id = ? AND encounter_id != ? ORDER BY encounter_seq ASC", (patient_id, encounter_id))
+        past_encounters = [{"encounter_seq": r[1], "chief_complaint": r[2], "created_at": r[3], "diagnosis_summary": r[4], "updated_at": r[5] or r[3]} for r in cursor.fetchall()]
 
         current_encounter = {
             "encounter_id": encounter_id,
@@ -365,8 +388,10 @@ def edit_chat_message(encounter_id: str, req: EditChatRequest):
 
         diag_summary = new_action.get("diagnosis_report", {}).get("primary_diagnosis", row[5]) if new_action.get("diagnosis_report") else row[5]
 
-        cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ? WHERE encounter_id = ?", 
-                       (json.dumps(history, ensure_ascii=False), diag_summary, encounter_id))
+        # 메시지 수정 시에도 updated_at 최신화
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cursor.execute("UPDATE encounters SET history_json = ?, diagnosis_summary = ?, updated_at = ? WHERE encounter_id = ?", 
+                       (json.dumps(history, ensure_ascii=False), diag_summary, now_str, encounter_id))
         conn.commit()
 
         return {"history": history, "latest_action": new_action}
@@ -463,7 +488,6 @@ def serve_ui():
         .chip { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 16px; padding: 6px 12px; font-size: 12px; cursor: pointer; color: #334155; }
         .chip:hover { background-color: #eff6ff; border-color: #2563eb; color: #1d4ed8; }
 
-        /* Gemini 스타일 자동 높이 확장 입력창 */
         .input-bar { background-color: #ffffff; padding: 12px 18px; border-top: 1px solid #e2e8f0; display: flex; gap: 10px; align-items: flex-end; }
         .input-bar textarea { 
             flex: 1; 
@@ -502,7 +526,7 @@ def serve_ui():
         .form-group label { display: block; font-size: 12px; font-weight: 700; color: #475569; margin-bottom: 4px; }
         .form-group input, .form-group select { width: 100%; padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13.5px; }
         .btn-submit { width: 100%; background: #2563eb; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: 700; cursor: pointer; margin-top: 10px; font-size: 14px; }
-        /* 📱 모바일/스마트폰 전용 완벽 레이아웃 최적화 */
+        
         @media (max-width: 768px) {
             html, body {
                 height: 100% !important;
@@ -520,7 +544,6 @@ def serve_ui():
                 display: flex !important;
                 flex-direction: column !important;
             }
-            /* 상단 사이드바를 아주 슬림한 환자 요약 탭으로 압축 */
             .sidebar {
                 width: 100% !important;
                 height: auto !important;
@@ -541,50 +564,10 @@ def serve_ui():
             .patient-card .p-name { font-size: 14px !important; }
             .patient-card .p-meta { font-size: 11px !important; margin: 0 !important; }
 
-            /* 모바일 진료 이력 토글 서랍 */
-            .enc-header {
-                display: flex !important;
-                padding: 6px 12px !important;
-                background: #e2e8f0 !important;
-                cursor: pointer;
-                font-size: 11.5px !important;
-                font-weight: 700 !important;
-                color: #334155 !important;
-                justify-content: space-between !important;
-                align-items: center !important;
-            }
-            .enc-header::after {
-                content: ' ▾ 이력 열기';
-                font-size: 10px;
-                color: #2563eb;
-            }
-            .enc-header.open::after {
-                content: ' ▴ 접기';
-            }
-            .history-list {
-                display: none;
-                max-height: 140px !important;
-                overflow-y: auto !important;
-                background: #ffffff !important;
-                padding: 6px 10px !important;
-                gap: 6px !important;
-                border-bottom: 1px solid #cbd5e1 !important;
-            }
-            .history-list.open {
-                display: flex !important;
-                flex-direction: column !important;
-            }
-            .history-item {
-                padding: 6px 8px !important;
-            }
-            .history-item .h-title {
-                font-size: 11.5px !important;
-            }
-            .history-item .h-meta {
-                font-size: 10px !important;
+            .enc-header, .history-list {
+                display: none !important;
             }
 
-            /* 채팅 섹션이 스마트폰 전체 화면 차지 */
             .chat-section {
                 flex: 1 !important;
                 height: auto !important;
@@ -607,7 +590,6 @@ def serve_ui():
                 font-size: 11px !important;
             }
 
-            /* 대화 스크롤 영역 */
             .chat-container {
                 flex: 1 !important;
                 padding: 10px !important;
@@ -628,7 +610,6 @@ def serve_ui():
                 line-height: 1.45 !important;
             }
 
-            /* 정밀 진단서 카드 크기 맞춤 */
             .diag-card {
                 padding: 10px !important;
                 margin-top: 6px !important;
@@ -641,7 +622,6 @@ def serve_ui():
                 padding: 6px !important;
             }
 
-            /* 하단 입력창 고정 및 짤림 방지 */
             .input-bar {
                 padding: 8px 10px !important;
                 gap: 6px !important;
@@ -745,14 +725,6 @@ def serve_ui():
 
         window.onload = function() {
             openLoginModal();
-            const encH = document.querySelector('.enc-header');
-            if (encH) {
-                encH.addEventListener('click', function() {
-                    this.classList.toggle('open');
-                    const hList = document.querySelector('.history-list');
-                    if (hList) hList.classList.toggle('open');
-                });
-            }
         };
 
         function openLoginModal() {
@@ -805,11 +777,12 @@ def serve_ui():
                 const item = document.createElement('div');
                 item.className = 'history-item' + (enc.encounter_id === currentEncounterId ? ' active' : '');
                 item.onclick = () => selectEncounter(enc.encounter_id);
+                // 표시 시간을 마지막 진료 활동 시간(updated_at)으로 출력
                 item.innerHTML = `
                     <div class="seq">제 ${enc.encounter_seq}차 진료</div>
                     <div class="complaint">${enc.chief_complaint}</div>
                     <div><span class="diag-badge">${enc.diagnosis_summary || '문진 진행 중'}</span></div>
-                    <div class="date">${enc.created_at}</div>
+                    <div class="date">${enc.updated_at || enc.created_at}</div>
                 `;
                 listContainer.appendChild(item);
             });
@@ -950,6 +923,17 @@ def serve_ui():
             if (res.ok) {
                 const data = await res.json();
                 renderChatHistory(data.history);
+
+                // 수정 후 목록 순서/시간 동기화
+                if (currentPatient) {
+                    const pRes = await fetch('/api/patients/auth', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(currentPatient)
+                    });
+                    const pData = await pRes.json();
+                    renderEncountersList(pData.encounters);
+                }
             } else {
                 alert('메시지 수정에 실패했습니다.');
             }
@@ -972,7 +956,6 @@ def serve_ui():
             }
         }
 
-        // Gemini 스타일 자동 높이 조절 함수
         function autoResizeTextarea(textarea) {
             textarea.style.height = 'auto';
             const newHeight = Math.min(textarea.scrollHeight, 160);
@@ -1004,12 +987,12 @@ def serve_ui():
                 });
                 const nextAction = await res.json();
                 
-                // 1. 현재 진료실 대화창 새로고침
+                // 1. 대화창 갱신
                 const encRes = await fetch(`/api/encounters/${currentEncounterId}`);
                 const encData = await encRes.json();
                 renderChatHistory(encData.history);
 
-                // 2. 왼쪽 사이드바 목록도 최신 진단명/확신도로 즉시 동기화
+                // 2. 왼쪽 사이드바(최신 활동 순으로 재정렬 및 시간 업데이트) 즉시 반영
                 if (currentPatient) {
                     const pRes = await fetch('/api/patients/auth', {
                         method: 'POST',
