@@ -13,7 +13,9 @@ import re
 import sqlite3
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+# 한국 시간대(UTC+9) 설정
+KST = timezone(timedelta(hours=9))
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
